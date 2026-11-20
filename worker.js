@@ -1,5 +1,6 @@
 const MAX_HTML = 5 * 1024 * 1024;
 const MAX_FILE = 80 * 1024 * 1024;
+const MAX_THUMB = 10 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 3;
 
@@ -7,10 +8,12 @@ const MAX_REDIRECTS = 3;
 // edge from the real connection and cannot be spoofed by the caller; locally the
 // header is absent and all traffic shares one 'unknown' bucket. Buckets live in
 // isolate memory, so limits are per isolate instance, not globally exact.
-// Separate budgets per endpoint: previews load directly from source hosts, so the
-// proxy budget is only spent by user-initiated downloads.
+// Separate budgets per endpoint: thumbnails load directly from source hosts first
+// and only fall back to /api/thumb when a host blocks cross-site embedding, so the
+// thumb budget covers automatic preview fallbacks and the proxy budget is spent by
+// user-initiated downloads.
 const RATE_WINDOW_MS = 10 * 60 * 1000;
-const RATE_LIMITS = { scan: 20, proxy: 100 };
+const RATE_LIMITS = { scan: 20, proxy: 100, thumb: 300 };
 const rateBuckets = new Map();
 function rateLimited(request, kind) {
   const key = kind + ':' + (request.headers.get('cf-connecting-ip') || 'unknown');
@@ -84,7 +87,7 @@ async function fetchPublic(rawURL, maxBytes, accept = '*/*') {
         method: 'GET',
         redirect: 'manual',
         signal: controller.signal,
-        headers: { 'user-agent': 'MediaFinder/1.2 (+public webpage media discovery)', 'accept': accept }
+        headers: { 'user-agent': 'MediaFinder/1.3 (+public webpage media discovery)', 'accept': accept }
       });
     } catch (error) {
       clearTimeout(timer);
@@ -197,6 +200,23 @@ async function handleScan(request) {
   } catch (error) { return json({ ok: false, error: error.message || 'Scan failed' }, 400); }
 }
 
+async function handleThumb(url) {
+  const rawURL = url.searchParams.get('url') || '';
+  if (!rawURL || rawURL.length > 2048) return new Response('A valid URL is required', { status: 400 });
+  if (/\.(m3u8|mpd)(?:\?|$)/i.test(rawURL)) return new Response('Streaming manifests are not supported', { status: 400 });
+  try {
+    const result = await fetchPublic(rawURL, MAX_THUMB, 'image/avif,image/webp,image/png,image/jpeg,image/*,*/*;q=0.8');
+    const contentType = (result.headers.get('content-type') || '').split(';')[0].toLowerCase();
+    if (!contentType.startsWith('image/')) return new Response('Source did not return an image', { status: 415 });
+    return new Response(result.bytes, { headers: {
+      'content-type': contentType,
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'",
+      'cache-control': 'private, max-age=3600'
+    }});
+  } catch (error) { return new Response(error.message || 'Thumbnail failed', { status: 400 }); }
+}
+
 async function handleProxy(url) {
   const rawURL = url.searchParams.get('url') || '';
   if (!rawURL || rawURL.length > 2048) return new Response('A valid URL is required', { status: 400 });
@@ -221,6 +241,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/api/health' && request.method === 'GET') return json({ ok: true, service: 'media-finder-cloudflare' });
     if (url.pathname === '/api/scan' && request.method === 'POST') { if (rateLimited(request, 'scan')) return json({ ok: false, error: 'Too many scans. Please wait a few minutes and try again.' }, 429); return handleScan(request); }
+    if (url.pathname === '/api/thumb' && request.method === 'GET') { if (rateLimited(request, 'thumb')) return new Response('Too many thumbnail requests. Please wait a few minutes and try again.', { status: 429 }); return handleThumb(url); }
     if (url.pathname === '/api/proxy' && request.method === 'GET') { if (rateLimited(request, 'proxy')) return new Response('Too many downloads. Please wait a few minutes and try again.', { status: 429 }); return handleProxy(url); }
     if (url.pathname.startsWith('/api/')) return json({ ok: false, error: 'Not found' }, 404);
     return env.ASSETS.fetch(request);

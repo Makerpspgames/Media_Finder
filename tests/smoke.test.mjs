@@ -96,3 +96,25 @@ test('proxy rate limit returns 429 after its separate budget is exhausted', asyn
   for (let i = 0; i < 105; i++) last = await fetch(`${BASE}/api/proxy`);
   assert.equal(last.status, 429);
 });
+
+test('thumbnail endpoint requires a url', async () => {
+  const r = await fetch(`${BASE}/api/thumb`);
+  assert.equal(r.status, 400);
+});
+
+test('thumbnail endpoint blocks internal hosts', async () => {
+  const r = await fetch(`${BASE}/api/thumb?url=${encodeURIComponent('http://127.0.0.1:8799/api/health')}`);
+  assert.equal(r.status, 400);
+});
+
+test('thumbnail endpoint refuses streaming manifests', async () => {
+  const r = await fetch(`${BASE}/api/thumb?url=${encodeURIComponent('https://example.com/x.m3u8')}`);
+  assert.equal(r.status, 400);
+  assert.match(await r.text(), /not supported/);
+});
+
+test('thumbnail rate limit returns 429 after its separate budget is exhausted', async () => {
+  let last;
+  for (let i = 0; i < 305; i++) last = await fetch(`${BASE}/api/thumb`);
+  assert.equal(last.status, 429);
+});

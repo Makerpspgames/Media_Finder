@@ -28,12 +28,15 @@ If the dashboard offers a direct **Workers & Pages → Create application → Wo
 
 - `GET /api/health` — health check.
 - `POST /api/scan` — JSON body `{ "url": "https://example.com" }`; fetches public HTML and extracts media references.
+- `GET /api/thumb?url=...` — serves a public image inline (up to 10 MB) for result thumbnails. HLS/DASH manifests are not supported.
 - `GET /api/proxy?url=...` — downloads direct public media files up to 80 MB. HLS/DASH manifests are not downloaded.
 
 ## Access modes and limitations
 
 ### Public URL scan
 The Worker fetches public HTTP(S) HTML and extracts media references from image/video tags, lazy-loading attributes, `srcset`, Open Graph/Twitter metadata and JSON-LD. It does not execute page JavaScript.
+
+Thumbnails load directly from the source host first. When a host blocks cross-site embedding (hotlink protection), the thumbnail automatically retries through `/api/thumb`, the same server-side fetch path used for downloads.
 
 ### Authenticated page import (local processing)
 If you can access a page after signing in, save that page as an HTML file from the browser and import it in Media Finder. The HTML is parsed locally in the browser; it is not uploaded to Cloudflare. Enter the original page URL in the optional base URL field so relative media paths can be resolved. Some browsers save only a simplified DOM; scripts, dynamically loaded resources, cross-origin frames, and media URLs requiring the original session may be absent or may not open outside that session.
@@ -54,4 +57,4 @@ The PWA cannot read cookies or login sessions belonging to other websites. It do
 - HTML is capped at 5 MB, direct media downloads at 80 MB, and requests time out after 15 seconds.
 - Cloudflare Workers handles outbound fetch networking. Unlike the former Node server, this Worker cannot pin a DNS lookup result to a socket; do not treat hostname checks as a substitute for Cloudflare's network-level egress protections. Do not add arbitrary internal service bindings or secrets to this public scanner.
 - This initial edition does not implement a persistent per-user rate limiter. Cloudflare Free plan usage limits apply; add a Cloudflare Rate Limiting rule or Turnstile before promoting the service publicly.
-- Browser caching is limited to the app shell; API responses are not cached.
+- Browser caching is limited to the app shell; API responses are not cached, except thumbnails, which may be kept privately in the visitor's own browser for up to one hour.
