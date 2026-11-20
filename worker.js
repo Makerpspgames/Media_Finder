@@ -3,6 +3,25 @@ const MAX_FILE = 80 * 1024 * 1024;
 const TIMEOUT_MS = 15000;
 const MAX_REDIRECTS = 3;
 
+// Best-effort per-client rate limiting. cf-connecting-ip is set by the Cloudflare
+// edge from the real connection and cannot be spoofed by the caller; locally the
+// header is absent and all traffic shares one 'unknown' bucket. Buckets live in
+// isolate memory, so limits are per isolate instance, not globally exact.
+// Separate budgets per endpoint: previews load directly from source hosts, so the
+// proxy budget is only spent by user-initiated downloads.
+const RATE_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMITS = { scan: 20, proxy: 100 };
+const rateBuckets = new Map();
+function rateLimited(request, kind) {
+  const key = kind + ':' + (request.headers.get('cf-connecting-ip') || 'unknown');
+  const now = Date.now();
+  if (rateBuckets.size > 10000) rateBuckets.clear();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || now - bucket.start > RATE_WINDOW_MS) { bucket = { start: now, count: 0 }; rateBuckets.set(key, bucket); }
+  bucket.count += 1;
+  return bucket.count > RATE_LIMITS[kind];
+}
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -201,8 +220,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/api/health' && request.method === 'GET') return json({ ok: true, service: 'media-finder-cloudflare' });
-    if (url.pathname === '/api/scan' && request.method === 'POST') return handleScan(request);
-    if (url.pathname === '/api/proxy' && request.method === 'GET') return handleProxy(url);
+    if (url.pathname === '/api/scan' && request.method === 'POST') { if (rateLimited(request, 'scan')) return json({ ok: false, error: 'Too many scans. Please wait a few minutes and try again.' }, 429); return handleScan(request); }
+    if (url.pathname === '/api/proxy' && request.method === 'GET') { if (rateLimited(request, 'proxy')) return new Response('Too many downloads. Please wait a few minutes and try again.', { status: 429 }); return handleProxy(url); }
     if (url.pathname.startsWith('/api/')) return json({ ok: false, error: 'Not found' }, 404);
     return env.ASSETS.fetch(request);
   }
