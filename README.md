@@ -1,39 +1,57 @@
-# Media Finder PWA
+# Media Finder PWA — Cloudflare Workers Edition
 
-Bilingual (Arabic/English) Progressive Web App for discovering image and video references in webpages. Responsive on phones and desktop; installable from supported browsers when served over HTTPS.
+Bilingual (Arabic/English) Progressive Web App for discovering image and video references in public webpages. Responsive on phones and desktop; installable from supported browsers over HTTPS.
 
-## Run locally
+## Deploy on Cloudflare (no credit card required for the Free plan)
+
+1. Create a free Cloudflare account: https://dash.cloudflare.com/sign-up
+2. Create a GitHub repository and upload the contents of this folder (not the parent folder).
+3. In Cloudflare Dashboard, open **Workers & Pages** → **Create** → **Import a repository**.
+4. Select the GitHub repository.
+5. Configure the project as a **Worker** with these settings:
+   - Build command: `npm install`
+   - Deploy command: `npx wrangler deploy`
+   - Root directory: `/` (or the folder containing `wrangler.toml`)
+6. Deploy. The `wrangler.toml` file configures the Worker entry point and the `public` static-assets directory.
+7. Open the generated `*.workers.dev` HTTPS URL. Use the browser's **Install app / Add to Home Screen** action.
+
+If the dashboard offers a direct **Workers & Pages → Create application → Workers → Import a repository** flow, use that and retain the repository's `wrangler.toml` settings. The dashboard labels can change over time.
+
+## Local development
+
 - Node.js 20+
 - `npm install`
-- `npm start`
-- Open `http://localhost:3000`
+- `npm run dev`
+- Open the local URL printed by Wrangler.
 
-PWA installation and service-worker caching require HTTPS in production (localhost is also treated as secure by browsers).
+## API
 
-## Deploy to Render
-1. Push the contents of this folder to a GitHub repository.
-2. Create a Render Web Service connected to that repository.
-3. Keep the included `render.yaml` settings (`npm install`, `npm start`, Node 20).
-4. Open the HTTPS URL on your phone and use the browser's **Install app / Add to Home Screen** action. The in-app install button appears when the browser exposes the install prompt.
+- `GET /api/health` — health check.
+- `POST /api/scan` — JSON body `{ "url": "https://example.com" }`; fetches public HTML and extracts media references.
+- `GET /api/proxy?url=...` — downloads direct public media files up to 80 MB. HLS/DASH manifests are not downloaded.
 
-## Access modes and important limitations
+## Access modes and limitations
 
-### 1. Public URL scan
-The backend fetches public HTTP(S) HTML and extracts media references from image/video tags, lazy-loading attributes, `srcset`, Open Graph/Twitter metadata and JSON-LD.
+### Public URL scan
+The Worker fetches public HTTP(S) HTML and extracts media references from image/video tags, lazy-loading attributes, `srcset`, Open Graph/Twitter metadata and JSON-LD. It does not execute page JavaScript.
 
-### 2. Authenticated page import (local processing)
-If you can access a page after signing in, save that page as an HTML file from the browser and import the file in Media Finder. The HTML is parsed locally in your browser; it is not uploaded to this server. Enter the original page URL in the optional base URL field so relative media paths can be resolved.
+### Authenticated page import (local processing)
+If you can access a page after signing in, save that page as an HTML file from the browser and import it in Media Finder. The HTML is parsed locally in the browser; it is not uploaded to Cloudflare. Enter the original page URL in the optional base URL field so relative media paths can be resolved. Some browsers save only a simplified DOM; scripts, dynamically loaded resources, cross-origin frames, and media URLs requiring the original session may be absent or may not open outside that session.
 
-This import method is best-effort: some browsers save only the current DOM or a simplified page; scripts, dynamically loaded resources, cross-origin frames, and media URLs requiring the original session may be absent or may not open outside that session. The PWA cannot read cookies or login sessions belonging to other websites. It does not ask for passwords, collect cookies, or forward session tokens.
+The PWA cannot read cookies or login sessions belonging to other websites. It does not ask for passwords, collect cookies, or forward session tokens.
 
-### What is not supported
-- Universal authenticated scanning across arbitrary websites. Official OAuth/API integrations would need to be implemented separately for each supported service.
+### Not supported
+- Universal authenticated scanning across arbitrary websites.
 - Reading another site's browser cookies or reusing its login session from the PWA.
 - Bypassing login controls, paywalls, anti-bot protections, DRM, CORS, or access restrictions.
-- Guaranteed extraction of JavaScript-rendered media, protected streams, HLS/DASH segment merging, or encrypted media.
+- Guaranteed extraction of JavaScript-rendered media, HLS/DASH segment merging, or encrypted media.
 - Guaranteed video quality/dimensions unless the source exposes those details.
 
-Downloads through the server proxy are for direct public media URLs only (up to 80 MB). Imported HTML results are opened directly from the browser and are not proxied, because they may depend on a signed URL or an authenticated browser session.
+## Security and platform notes
 
-## Production hardening
-The server now applies a per-IP request limit (30 API requests/minute), caps HTML and media downloads, follows only a small number of redirects after re-validating each destination, rejects private/reserved IP ranges, pins outbound requests to a DNS-resolved public IP, and applies request timeouts. The in-memory rate limiter is per process and is not a substitute for a shared production quota on multi-instance deployments. Add authentication/quotas and operational monitoring before offering this as a high-volume public service. Review target-site terms and copyright requirements.
+- API fetches accept HTTP(S) hostnames only; IP-literal hosts, localhost and common internal hostnames are rejected.
+- Redirects are manual, limited to three, and every redirect destination is revalidated.
+- HTML is capped at 5 MB, direct media downloads at 80 MB, and requests time out after 15 seconds.
+- Cloudflare Workers handles outbound fetch networking. Unlike the former Node server, this Worker cannot pin a DNS lookup result to a socket; do not treat hostname checks as a substitute for Cloudflare's network-level egress protections. Do not add arbitrary internal service bindings or secrets to this public scanner.
+- This initial edition does not implement a persistent per-user rate limiter. Cloudflare Free plan usage limits apply; add a Cloudflare Rate Limiting rule or Turnstile before promoting the service publicly.
+- Browser caching is limited to the app shell; API responses are not cached.
